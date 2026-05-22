@@ -10,7 +10,7 @@ import struct
 
 import pytest
 
-from bluek import _att, _mgmt, uuids
+from bluek import _att, _hci, _mgmt, uuids
 from bluek._att import ATTClient
 
 
@@ -63,6 +63,27 @@ def test_properties_to_strings():
     assert _att.properties_to_strings(0x02) == ["read"]
     assert _att.properties_to_strings(0x18) == ["write", "notify"]
     assert _att.properties_to_strings(0x10 | 0x20) == ["notify", "indicate"]
+
+
+# -- adapter resolution (hciN / MAC) --------------------------------------
+def test_adapter_index_hci_and_default():
+    assert _hci.adapter_index(None) == 0
+    assert _hci.adapter_index("default") == 0
+    assert _hci.adapter_index("hci0") == 0
+    assert _hci.adapter_index("hci1") == 1
+    with pytest.raises(ValueError):
+        _hci.adapter_index("wlan0")
+
+
+def test_adapter_index_mac_resolution(monkeypatch):
+    addrs = {0: "0C:EF:15:47:4A:46", 1: "2C:CF:67:5F:4A:6D"}
+    monkeypatch.setattr(_hci, "_candidate_hci_indices", lambda: [0, 1])
+    monkeypatch.setattr(_hci, "_hci_addr_for_index", lambda i: addrs.get(i))
+
+    assert _hci.adapter_index("2C:CF:67:5F:4A:6D") == 1
+    assert _hci.adapter_index("0c:ef:15:47:4a:46") == 0  # case-insensitive
+    with pytest.raises(ValueError):
+        _hci.adapter_index("AA:BB:CC:DD:EE:FF")
 
 
 # -- scripted GATT server over a fake L2CAP transport ---------------------

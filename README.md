@@ -34,6 +34,10 @@ or transparently shadow the real `bleak`:
 import bluek.shadow  # noqa: F401  — makes `import bleak` resolve to bluek
 ```
 
+The `adapter=` argument accepts an `hciN` name, a controller **MAC**
+(`"2C:CF:67:5F:4A:6D"`, re-resolved to its current index on each connect so it
+survives USB re-enumeration), or `None`/`"default"` for `hci0`.
+
 ## Requirements
 
 Linux with a BlueZ kernel stack. Opening the management socket and L2CAP LE
