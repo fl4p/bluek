@@ -1,13 +1,13 @@
-"""Activate the bleak shadow: make ``import bleak`` resolve to bleaz.
+"""Activate the bleak shadow: make ``import bleak`` resolve to bluek.
 
 Importing this module prepends the bundled shim directory to ``sys.path`` so
 that ``bleak`` and ``bleak_retry_connector`` — including imports inside
-third-party libraries such as aiobmsble — resolve to bleaz instead of the real
+third-party libraries such as aiobmsble — resolve to bluek instead of the real
 BlueZ/D-Bus bleak.
 
 Use it as the very first import of your program, before anything imports bleak::
 
-    import bleaz.shadow  # noqa: F401  (redirect bleak -> bleaz, no D-Bus)
+    import bluek.shadow  # noqa: F401  (redirect bleak -> bluek, no D-Bus)
 
 Idempotent and safe to import multiple times.
 """
@@ -30,8 +30,8 @@ def install() -> None:
         import warnings
 
         warnings.warn(
-            "bleaz.shadow.install() ran after the real 'bleak' was already "
-            "imported; import bleaz.shadow earlier to fully shadow it.",
+            "bluek.shadow.install() ran after the real 'bleak' was already "
+            "imported; import bluek.shadow earlier to fully shadow it.",
             RuntimeWarning,
             stacklevel=2,
         )

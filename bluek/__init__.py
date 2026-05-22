@@ -1,15 +1,15 @@
-"""bleaz: a bleak-compatible BLE central API talking to the kernel BlueZ stack.
+"""bluek: a bleak-compatible BLE central API talking to the kernel BlueZ stack.
 
 Drop-in for the subset of bleak used by GATT-client applications, with no
 D-Bus and no exclusive control of the controller (it coexists with bluetoothd).
 Use as::
 
-    import bleaz as bleak
-    from bleaz import BleakClient, BleakScanner
+    import bluek as bleak
+    from bluek import BleakClient, BleakScanner
 
 or shadow the real bleak transparently::
 
-    import bleaz.shadow  # noqa: F401
+    import bluek.shadow  # noqa: F401
 """
 
 from __future__ import annotations

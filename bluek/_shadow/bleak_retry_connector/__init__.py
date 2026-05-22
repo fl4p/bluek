@@ -1,4 +1,4 @@
-"""Minimal `bleak_retry_connector` shim backed by bleaz.
+"""Minimal `bleak_retry_connector` shim backed by bluek.
 
 Only the surface aiobmsble uses: ``BLEAK_TIMEOUT`` and ``establish_connection``.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Optional
 
-from bleaz import BLEDevice, BleakClient
+from bluek import BLEDevice, BleakClient
 
 BLEAK_TIMEOUT: float = 20.0
 
@@ -28,7 +28,7 @@ async def establish_connection(
     """Create a client of ``client_class`` for ``device`` and connect, with retries.
 
     Extra kwargs (e.g. ``services=``, ``cached_services=``) are accepted and
-    ignored — bleaz discovers services on connect.
+    ignored — bluek discovers services on connect.
     """
     last_exc: Optional[BaseException] = None
     for attempt in range(max_attempts):

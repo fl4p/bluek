@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Hardware spike: scan -> connect -> discover -> read -> notify, using bleaz.
+"""Hardware spike: scan -> connect -> discover -> read -> notify, using bluek.
 
 Run on a Linux box with a BlueZ kernel stack and CAP_NET_ADMIN/CAP_NET_RAW
-(e.g. as root) while bluetoothd keeps running — bleaz is meant to coexist.
+(e.g. as root) while bluetoothd keeps running — bluek is meant to coexist.
 
     sudo python3 examples/spike.py [TARGET_MAC_OR_NAME] [hciN]
 
@@ -14,7 +14,7 @@ notifying characteristic exists) subscribes for a few seconds.
 import asyncio
 import sys
 
-from bleaz import BleakClient, BleakScanner
+from bluek import BleakClient, BleakScanner
 
 
 async def scan(adapter, seconds=6.0):

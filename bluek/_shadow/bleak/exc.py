@@ -1,4 +1,4 @@
-from bleaz.exc import (  # noqa: F401
+from bluek.exc import (  # noqa: F401
     BleakCharacteristicNotFoundError,
     BleakDeviceNotFoundError,
     BleakError,

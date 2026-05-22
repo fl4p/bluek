@@ -10,8 +10,8 @@ import struct
 
 import pytest
 
-from bleaz import _att, _mgmt, uuids
-from bleaz._att import ATTClient
+from bluek import _att, _mgmt, uuids
+from bluek._att import ATTClient
 
 
 # -- uuids ----------------------------------------------------------------

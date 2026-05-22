@@ -1,18 +1,18 @@
-"""`bleak` shadow package backed by bleaz.
+"""`bleak` shadow package backed by bluek.
 
-Placed ahead of site-packages on the import path (via ``import bleaz.shadow``)
+Placed ahead of site-packages on the import path (via ``import bluek.shadow``)
 so that ``import bleak`` — including third-party libraries such as aiobmsble —
-resolves to bleaz instead of the real BlueZ/D-Bus bleak.
+resolves to bluek instead of the real BlueZ/D-Bus bleak.
 """
 
-from bleaz import (  # noqa: F401
+from bluek import (  # noqa: F401
     BLEDevice,
     BleakClient,
     BleakScanner,
     exc,
     uuids,
 )
-from bleaz.exc import (  # noqa: F401
+from bluek.exc import (  # noqa: F401
     BleakCharacteristicNotFoundError,
     BleakDeviceNotFoundError,
     BleakError,

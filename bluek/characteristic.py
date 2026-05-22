@@ -1,9 +1,9 @@
 """bleak-compatible GATT service/characteristic/descriptor wrappers.
 
-Each wraps a :mod:`bleaz._att` GATT object and exposes the attributes batmon-ha
+Each wraps a :mod:`bluek._att` GATT object and exposes the attributes batmon-ha
 reads: service ``.uuid``/``.characteristics``; characteristic ``.uuid``/
 ``.handle``/``.properties``/``.descriptors``; descriptor ``.handle``/``.uuid``.
-The wrappers carry the ATT value handle so :class:`bleaz.client.BleakClient` can
+The wrappers carry the ATT value handle so :class:`bluek.client.BleakClient` can
 read/write/subscribe.
 """
 

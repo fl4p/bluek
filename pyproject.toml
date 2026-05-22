@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bleaz"
+name = "bluek"
 version = "0.1.0"
 description = "A bleak-compatible BLE central API for Linux, talking to the in-kernel BlueZ stack via sockets (no D-Bus, no exclusive HCI ownership)."
 readme = "README.md"
@@ -13,7 +13,7 @@ authors = [{ name = "Fabian" }]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/fl4p/bleaz"
+Homepage = "https://github.com/fl4p/bluek"
 
 [tool.setuptools.packages.find]
-include = ["bleaz*"]
+include = ["bluek*"]

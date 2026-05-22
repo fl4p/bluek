@@ -1,6 +1,6 @@
 """Pairing delegated to ``bluetoothctl``.
 
-bleaz does not implement SMP; the kernel/bluetoothd performs and stores the
+bluek does not implement SMP; the kernel/bluetoothd performs and stores the
 bond. We drive an interactive ``bluetoothctl`` session (spawned without a shell,
 arguments passed as a list): enable an agent, pair, answer any passkey/PIN
 prompt from the bleak-style ``callback(device, pin, passkey)``, then trust the

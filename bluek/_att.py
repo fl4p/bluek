@@ -117,7 +117,7 @@ class GattService:
 
 
 class ATTClient:
-    """ATT client bound to a connected :class:`bleaz._l2cap.L2CAPSocket`."""
+    """ATT client bound to a connected :class:`bluek._l2cap.L2CAPSocket`."""
 
     def __init__(self, l2cap, on_disconnect: Optional[Callable[[Optional[Exception]], None]] = None):
         from .uuids import uuid_from_bytes  # local import avoids cycle at module load

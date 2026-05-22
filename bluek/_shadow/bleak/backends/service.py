@@ -1,4 +1,4 @@
-from bleaz.characteristic import (  # noqa: F401
+from bluek.characteristic import (  # noqa: F401
     BleakGATTCharacteristic,
     BleakGATTDescriptor,
     BleakGATTService,
