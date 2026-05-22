@@ -1,0 +1,46 @@
+# bleaz
+
+A [bleak](https://github.com/hbldh/bleak)-compatible BLE **central** API for
+Linux that talks to the **in-kernel** BlueZ stack directly over sockets — **no
+D-Bus**, and (unlike [bumble-bleak](https://github.com/fl4p/bumble-bleak)) **no
+exclusive control of the controller**. The kernel keeps managing the adapter, so
+`bleaz` coexists with `bluetoothd` / Home Assistant.
+
+```
+app → bleaz → bluez (kernel) → hw
+```
+
+- **Scanning**: Bluetooth management socket (`HCI_CHANNEL_CONTROL`) — the same
+  API `bluetoothd` uses, so discovery coexists.
+- **GATT**: an L2CAP socket on the ATT channel (CID `0x0004`); the ATT/GATT
+  client protocol is implemented in Python (the `gatttool`/`btgatt-client` model).
+- **Pairing**: delegated to `bluetoothctl` (the kernel keeps the keys); no SMP
+  in bleaz.
+
+It's the Linux sibling of [micropython-bleak](https://github.com/fl4p/micropython-bleak)
+(wraps `aioble`) and [bumble-bleak](https://github.com/fl4p/bumble-bleak) (wraps
+Bumble).
+
+## Usage
+
+```python
+import bleaz as bleak
+from bleaz import BleakClient, BleakScanner
+```
+
+or transparently shadow the real `bleak`:
+
+```python
+import bleaz.shadow  # noqa: F401  — makes `import bleak` resolve to bleaz
+```
+
+## Requirements
+
+Linux with a BlueZ kernel stack. Opening the management socket and L2CAP LE
+sockets needs `CAP_NET_ADMIN` / `CAP_NET_RAW` (root, or the equivalent
+capabilities in a container).
+
+## Status
+
+Early. Implements the GATT-client subset that `batmon-ha` uses. See
+`tests/` for the pure codec tests and `examples/spike.py` for a hardware probe.
