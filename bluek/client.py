@@ -14,6 +14,15 @@ from .uuids import normalize_uuid_str
 
 CharSpec = Union[str, int, BleakGATTCharacteristic]
 
+# A cold L2CAP connect to a weak/flaky LE peer can fail at the link layer with
+# HCI status 0x3E ("connection failed to be established"). The kernel has no
+# errno for 0x3E, so it surfaces via SO_ERROR as ENOSYS ("Function not
+# implemented") -- it is *transient*, not a missing syscall. Retry such fast
+# failures within the caller's timeout budget instead of bubbling up a hard
+# "device not found" (which forces the slow scanner fallback). A genuine
+# asyncio.TimeoutError (peer truly absent / out of range) is NOT retried here.
+_CONNECT_RETRY_DELAY = 0.3
+
 
 class BleakClient:
     def __init__(
@@ -56,19 +65,39 @@ class BleakClient:
 
     async def connect(self, timeout: float = 10.0, **kwargs) -> bool:
         src = _hci.adapter_address(self._index)
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
         last_exc: Optional[BaseException] = None
         l2: Optional[L2CAPSocket] = None
-        for peer_type in self._candidate_types():
-            try:
-                l2 = await L2CAPSocket.connect(
-                    dst=self.address, dst_type=peer_type, src=src, timeout=timeout
-                )
-                self._peer_type = peer_type
+        transient = False
+
+        while True:
+            transient = False
+            for peer_type in self._candidate_types():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    l2 = await L2CAPSocket.connect(
+                        dst=self.address, dst_type=peer_type, src=src, timeout=remaining
+                    )
+                    self._peer_type = peer_type
+                    break
+                except asyncio.TimeoutError as e:
+                    # peer didn't respond within budget: absent / out of range.
+                    last_exc = e
+                except OSError as e:
+                    # fast link-layer failure (e.g. 0x3E -> ENOSYS): transient.
+                    last_exc = e
+                    transient = True
+            if l2 is not None:
                 break
-            except asyncio.TimeoutError as e:
-                last_exc = e
-            except OSError as e:
-                last_exc = e
+            # Only the transient OSError path is worth retrying, and only while
+            # the caller's timeout budget allows another attempt.
+            if not transient or (deadline - loop.time()) <= _CONNECT_RETRY_DELAY:
+                break
+            await asyncio.sleep(_CONNECT_RETRY_DELAY)
+
         if l2 is None:
             raise BleakDeviceNotFoundError(
                 self.address, f"could not connect to {self.address}: {last_exc}"

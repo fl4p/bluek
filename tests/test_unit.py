@@ -6,6 +6,7 @@ hardware.
 """
 
 import asyncio
+import errno
 import struct
 
 import pytest
@@ -84,6 +85,88 @@ def test_adapter_index_mac_resolution(monkeypatch):
     assert _hci.adapter_index("0c:ef:15:47:4a:46") == 0  # case-insensitive
     with pytest.raises(ValueError):
         _hci.adapter_index("AA:BB:CC:DD:EE:FF")
+
+
+# -- connect retry on transient LE link failure ---------------------------
+# HCI 0x3E "connection failed to be established" surfaces as ENOSYS via SO_ERROR
+# on RPi-class controllers; it's transient and must be retried, whereas a real
+# asyncio.TimeoutError (device absent) must NOT be retried (batmon's scanner
+# handles that path).
+class _FakeL2:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeATT:
+    def __init__(self, l2, on_disconnect=None):
+        self._l2 = l2
+
+    async def exchange_mtu(self):
+        return 247
+
+    async def discover(self):
+        return []
+
+    def close(self):
+        self._l2.close()
+
+
+def _patch_client_deps(monkeypatch, connect_side_effects):
+    """Patch client.connect's collaborators; return a call counter list."""
+    from bluek import client as client_mod
+    from bluek._l2cap import L2CAPSocket
+
+    monkeypatch.setattr(client_mod._hci, "adapter_address", lambda idx: None)
+    monkeypatch.setattr(client_mod._hci, "adapter_index", lambda a: 0)
+    monkeypatch.setattr(client_mod._att, "ATTClient", _FakeATT)
+
+    calls = []
+
+    async def fake_connect(*, dst, dst_type, src, timeout):
+        calls.append(dst_type)
+        exc = connect_side_effects[min(len(calls) - 1, len(connect_side_effects) - 1)]
+        if exc is not None:
+            raise exc
+        return _FakeL2()
+
+    monkeypatch.setattr(L2CAPSocket, "connect", staticmethod(fake_connect))
+    return calls
+
+
+def test_connect_retries_transient_enosys(monkeypatch):
+    from bluek.client import BleakClient
+
+    # A full candidate-type round (public, random) fails ENOSYS, then the next
+    # round succeeds -> proves a real cross-round retry, not just trying the
+    # other address type.
+    enosys = OSError(errno.ENOSYS, "Function not implemented", "l2cap connect")
+    calls = _patch_client_deps(monkeypatch, [enosys, enosys, None])
+
+    client = BleakClient("20:A1:11:02:23:45")
+    # short retry delay so the test is fast
+    monkeypatch.setattr("bluek.client._CONNECT_RETRY_DELAY", 0.0)
+    ok = asyncio.run(client.connect(timeout=5.0))
+    assert ok is True
+    assert client.is_connected
+    assert len(calls) == 3  # 2 failed (public+random) + 1 retry success
+
+
+def test_connect_does_not_retry_timeout(monkeypatch):
+    from bluek.client import BleakClient
+    from bluek.exc import BleakDeviceNotFoundError
+
+    # Always times out -> device absent -> must NOT spin on retries.
+    calls = _patch_client_deps(monkeypatch, [asyncio.TimeoutError()])
+    monkeypatch.setattr("bluek.client._CONNECT_RETRY_DELAY", 0.0)
+
+    client = BleakClient("20:A1:11:02:23:45")
+    with pytest.raises(BleakDeviceNotFoundError):
+        asyncio.run(client.connect(timeout=5.0))
+    # one round over candidate types (public, random); no transient-retry rounds
+    assert len(calls) <= 2
 
 
 # -- scripted GATT server over a fake L2CAP transport ---------------------
