@@ -114,14 +114,23 @@ class _FakeATT:
         self._l2.close()
 
 
-def _patch_client_deps(monkeypatch, connect_side_effects):
-    """Patch client.connect's collaborators; return a call counter list."""
+def _patch_client_deps(monkeypatch, connect_side_effects, prescan_observed=None):
+    """Patch client.connect's collaborators; return a call counter list.
+
+    ``prescan_observed`` is the value returned by the pre-connect mgmt scan
+    (None = simulate "peer not observed in budget"; an int = address type).
+    """
     from bluek import client as client_mod
     from bluek._l2cap import L2CAPSocket
 
     monkeypatch.setattr(client_mod._hci, "adapter_address", lambda idx: None)
     monkeypatch.setattr(client_mod._hci, "adapter_index", lambda a: 0)
     monkeypatch.setattr(client_mod._att, "ATTClient", _FakeATT)
+
+    async def fake_prescan(index, target_mac, budget_s=2.0):
+        return prescan_observed
+
+    monkeypatch.setattr(client_mod, "_ensure_kernel_knows_peer", fake_prescan)
 
     calls = []
 
@@ -167,6 +176,40 @@ def test_connect_does_not_retry_timeout(monkeypatch):
         asyncio.run(client.connect(timeout=5.0))
     # one round over candidate types (public, random); no transient-retry rounds
     assert len(calls) <= 2
+
+
+def test_connect_prescan_narrows_candidate_types(monkeypatch):
+    """If the pre-connect mgmt scan observes the peer as RANDOM, connect should
+    only probe RANDOM — no wasted PUBLIC attempt."""
+    from bluek.client import BleakClient
+    from bluek._l2cap import BDADDR_LE_RANDOM
+
+    # Pre-scan observes peer as LE Random; first connect attempt succeeds.
+    calls = _patch_client_deps(monkeypatch, [None], prescan_observed=BDADDR_LE_RANDOM)
+
+    client = BleakClient("F0:F1:F2:F3:F4:F5")
+    ok = asyncio.run(client.connect(timeout=5.0))
+    assert ok is True
+    assert calls == [BDADDR_LE_RANDOM]  # exactly one probe, on the right type
+
+
+def test_connect_prescan_no_observation_tries_both(monkeypatch):
+    """When the pre-scan budget expires without seeing the peer, the connect
+    falls back to probing both candidate types in order."""
+    from bluek.client import BleakClient
+    from bluek._l2cap import BDADDR_LE_PUBLIC, BDADDR_LE_RANDOM
+
+    # Pre-scan returns None -> peer_type stays unknown -> try public first,
+    # public fails timeout, then try random which succeeds.
+    calls = _patch_client_deps(
+        monkeypatch, [asyncio.TimeoutError(), None], prescan_observed=None
+    )
+
+    client = BleakClient("20:A1:11:02:23:45")
+    monkeypatch.setattr("bluek.client._CONNECT_RETRY_DELAY", 0.0)
+    ok = asyncio.run(client.connect(timeout=5.0))
+    assert ok is True
+    assert calls == [BDADDR_LE_PUBLIC, BDADDR_LE_RANDOM]
 
 
 # -- scripted GATT server over a fake L2CAP transport ---------------------

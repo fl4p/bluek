@@ -7,6 +7,7 @@ from typing import Callable, List, Optional, Union
 
 from . import _att, _hci
 from ._l2cap import BDADDR_LE_PUBLIC, BDADDR_LE_RANDOM, L2CAPSocket
+from ._mgmt import DeviceFound, MgmtSocket
 from .characteristic import BleakGATTCharacteristic, BleakGATTService, BleakGATTServiceCollection
 from .device import BLEDevice
 from .exc import BleakCharacteristicNotFoundError, BleakDeviceNotFoundError, BleakError
@@ -22,6 +23,59 @@ CharSpec = Union[str, int, BleakGATTCharacteristic]
 # "device not found" (which forces the slow scanner fallback). A genuine
 # asyncio.TimeoutError (peer truly absent / out of range) is NOT retried here.
 _CONNECT_RETRY_DELAY = 0.3
+
+# The kernel's L2CAP LE connect path needs a recent advert observation for the
+# peer; without it, ``connect()`` either silently hangs (bluetoothd holding the
+# scan slot) or returns EHOSTUNREACH. Real users hit this implicitly by running
+# BleakScanner before BleakClient, but a bare ``BleakClient(mac).connect()``
+# would otherwise time out for no obvious reason. We open a short mgmt-level
+# discovery before each connect to populate the kernel cache; the helper bails
+# as soon as the target advert arrives, so the cost is one advertising interval
+# (~100–500 ms for most peripherals) when the user *did* pre-scan, and a small
+# fixed budget when they didn't. Patchable for tests.
+_CONNECT_PRESCAN_BUDGET_S = 2.0
+
+
+async def _ensure_kernel_knows_peer(
+    index: int, target_mac: str, budget_s: float = _CONNECT_PRESCAN_BUDGET_S
+) -> Optional[int]:
+    """Run a brief LE discovery on ``index`` until ``target_mac`` is seen.
+
+    Returns the observed ``address_type`` (``BDADDR_LE_PUBLIC`` or
+    ``BDADDR_LE_RANDOM``), or ``None`` if no advert arrived within the budget
+    — in which case the caller should proceed anyway, because the kernel may
+    already have the peer cached from a prior scan that we can't observe.
+    """
+    if budget_s <= 0:
+        return None
+    target = target_mac.upper()
+    seen_type: Optional[int] = None
+    try:
+        mgmt = MgmtSocket.open()
+    except OSError:
+        # No CAP_NET_ADMIN, or kernel issue. Let L2CAPSocket.connect surface
+        # the real error.
+        return None
+
+    def on_found(_idx: int, df: DeviceFound) -> None:
+        nonlocal seen_type
+        if _idx == index and df.address.upper() == target:
+            seen_type = df.address_type
+
+    mgmt.add_device_found_handler(on_found)
+    try:
+        await mgmt.start_discovery(index)
+        steps = max(1, int(budget_s / 0.05))
+        for _ in range(steps):
+            await asyncio.sleep(0.05)
+            if seen_type is not None:
+                return seen_type
+    finally:
+        try:
+            await mgmt.stop_discovery(index)
+        finally:
+            mgmt.close()
+    return None
 
 
 class BleakClient:
@@ -67,6 +121,22 @@ class BleakClient:
         src = _hci.adapter_address(self._index)
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
+
+        # Prime the kernel's LE cache for this peer (short, abortable on first
+        # advert). Skip when we already know the peer's address type AND have a
+        # plausible scenario where the kernel already knows about it — caller
+        # owns the cost trade-off via ``timeout``. The budget is capped so a
+        # genuinely-absent peer still fails fast within the caller's window.
+        prescan_budget = min(_CONNECT_PRESCAN_BUDGET_S, max(0.0, timeout - 1.0))
+        if prescan_budget > 0:
+            observed = await _ensure_kernel_knows_peer(
+                self._index, self.address, budget_s=prescan_budget
+            )
+            if observed in (BDADDR_LE_PUBLIC, BDADDR_LE_RANDOM):
+                # Lock in the observed address type so we don't waste a probe
+                # on the wrong one. Overrides any stale BLEDevice hint.
+                self._peer_type = observed
+
         last_exc: Optional[BaseException] = None
         l2: Optional[L2CAPSocket] = None
         transient = False

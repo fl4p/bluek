@@ -17,6 +17,13 @@ app → bluek → bluez (kernel) → hw
 - **Pairing**: delegated to `bluetoothctl` (the kernel keeps the keys); no SMP
   in bluek.
 
+`BleakClient.connect()` runs a short (≤2 s) mgmt-level discovery first so the
+kernel's L2CAP-LE connect path has a recent advert observation for the peer —
+without this, `connect()` silently hangs (when bluetoothd is also scanning)
+or returns `EHOSTUNREACH` for the bare-MAC case. The pre-scan bails as soon
+as the peer's advert arrives, so the cost is one advertising interval
+(typically <500 ms) when a `BleakScanner` was already running.
+
 It's the Linux sibling of [micropython-bleak](https://github.com/fl4p/micropython-bleak)
 (wraps `aioble`) and [bumble-bleak](https://github.com/fl4p/bumble-bleak) (wraps
 Bumble).
