@@ -49,6 +49,19 @@ For a central juggling several BLE devices, that's tens of milliseconds of Pi-co
 
  A central juggling  several devices and a notify stream easily hits hundreds of these per second — so ~10–30 % of a Pi 5 core just on D-Bus shuttling, which bluek avoids entirely.
 
+### Same RTT, different CPU bill
+
+End-to-end on the same Pi 5, against a bumble peripheral on a second adapter (default ~50 ms connection interval), 200 sequential GATT reads + 200 writes per stack, CPU time read from `/proc/{pid}/stat` over the same 36 s window:
+
+| stack | read p50 | total CPU | breakdown | per-op CPU |
+|---|---:|---:|---|---:|
+| `bluek`  | 92.0 ms | **90 ms**  | 80 ms python + 10 ms bluetoothd | **0.23 ms/op** |
+| `bleak`  | 88.6 ms | **410 ms** | 140 ms python + 100 ms bluetoothd + 170 ms dbus-daemon | **1.03 ms/op** |
+
+Wall-clock RTT is statistically identical — both stacks pay the same ~50 ms of BLE air time per operation, and the ~96 µs/IPC delta is invisible at that scale. The difference shows up in **CPU**: bleak burns ~4.5× more, and the extra ~800 µs/op lines up with the microbench number scaled by the ~8 D-Bus messages a typical GATT op traverses (the call + return, plus `PropertiesChanged` for state, plus Variant unmarshalling on both ends).
+
+So the take is: bluek doesn't make individual operations *faster*, it makes them *cheaper*. On a Pi 5 a saturated BLE central running bleak hits ~25 % of a core just on GATT D-Bus shuttling; through bluek the same workload costs ~5 %, freeing the rest for application logic.
+
 ## Where it doesn't really matter
 
 - For most HA workloads (dozens of devices, hundreds of adverts/sec), the actual bottleneck is Python + asyncio scheduling, not D‑Bus marshalling. `dbus-fast` already pushed the marshalling cost into Cython hot paths. So you may save 30–60% of *Bluetooth* CPU and still see the same wall‑clock end‑to‑end behavior.
