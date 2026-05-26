@@ -8,3 +8,6 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+bench/results/*.json
+!bench/results/.gitkeep
+bench/.venv/

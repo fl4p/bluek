@@ -1,0 +1,6 @@
+# Bench-only runtime deps. Pinned conservatively for reproducibility; bump as needed.
+# bluek itself has zero runtime deps; install separately with `pip install -e ../`.
+
+bleak==0.22.3
+dbus-fast==2.24.4
+bumble==0.0.198
