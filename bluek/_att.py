@@ -127,7 +127,9 @@ class ATTClient:
         self._loop = asyncio.get_event_loop()
         self._txn_lock = asyncio.Lock()
         self._pending: Optional[asyncio.Future] = None
+        self._pending_opcode: Optional[int] = None  # opcode _pending awaits
         self._mtu = DEFAULT_MTU
+        self._peer_initiated_mtu = False  # set when the peer sends its own MTU req
         self._notify_handlers: Dict[int, Callable[[bytearray], None]] = {}
         self._on_disconnect = on_disconnect
         l2cap.start_reader(self._on_data, self._on_close)
@@ -152,6 +154,27 @@ class ATTClient:
             # Acknowledge the indication (fire-and-forget).
             self._loop.create_task(self._confirm())
             return
+        if opcode == EXCHANGE_MTU_REQ:
+            # The *server* initiated the MTU exchange — spec-legal (Core Vol 3
+            # Part F 3.4.2), and some peripherals do it (a JK BMS, batmon-ha
+            # #385). Reply with our rx MTU and adopt the negotiated minimum. This
+            # must NOT fall through to `_pending`: a concurrent client-initiated
+            # exchange_mtu() is waiting there for a 0x03 response and would
+            # otherwise misread this 0x02 request as its reply and raise
+            # "unexpected ATT opcode 0x02 (wanted 0x03)".
+            peer_mtu = int.from_bytes(data[1:3], "little")
+            self._mtu = max(DEFAULT_MTU, min(PREFERRED_MTU, peer_mtu))
+            self._peer_initiated_mtu = True
+            self._loop.create_task(self._send_mtu_rsp())
+            # If our own exchange_mtu() is the pending transaction, satisfy it now
+            # from the peer's request (its request and our response carry the same
+            # negotiated MTU) instead of leaving it to expire on ATT_TIMEOUT. Gated
+            # on the pending opcode so this never hijacks an in-flight read/write —
+            # those keep waiting for their own response.
+            fut = self._pending
+            if fut is not None and not fut.done() and self._pending_opcode == EXCHANGE_MTU_RSP:
+                fut.set_result(bytes([EXCHANGE_MTU_RSP]) + peer_mtu.to_bytes(2, "little"))
+            return
         fut = self._pending
         if fut is not None and not fut.done():
             fut.set_result(bytes(data))
@@ -159,6 +182,15 @@ class ATTClient:
     async def _confirm(self) -> None:
         try:
             await self._l2.send(bytes([HANDLE_VALUE_CFM]))
+        except OSError:
+            pass
+
+    async def _send_mtu_rsp(self) -> None:
+        # Reply to a server-initiated Exchange MTU Request, advertising our full
+        # rx MTU (the effective ATT_MTU is the min of the two, already stored in
+        # self._mtu by the caller). Fire-and-forget.
+        try:
+            await self._l2.send(bytes([EXCHANGE_MTU_RSP]) + PREFERRED_MTU.to_bytes(2, "little"))
         except OSError:
             pass
 
@@ -179,11 +211,13 @@ class ATTClient:
         async with self._txn_lock:
             fut = self._loop.create_future()
             self._pending = fut
+            self._pending_opcode = expected_opcode
             try:
                 await self._l2.send(payload)
                 data = await asyncio.wait_for(fut, ATT_TIMEOUT)
             finally:
                 self._pending = None
+                self._pending_opcode = None
         opcode = data[0]
         if opcode == ERROR_RSP:
             req_op, handle, err = struct.unpack_from("<BHB", data, 1)
@@ -193,11 +227,25 @@ class ATTClient:
         return data
 
     async def exchange_mtu(self, mtu: int = PREFERRED_MTU) -> int:
+        self._peer_initiated_mtu = False
         payload = bytes([EXCHANGE_MTU_REQ]) + mtu.to_bytes(2, "little")
         try:
             data = await self._request(payload, EXCHANGE_MTU_RSP)
         except ATTError:
+            # Server refused the exchange; keep the default MTU and proceed.
             return self._mtu
+        except asyncio.TimeoutError:
+            # A timeout means one of two very different things, and we must not
+            # conflate them (absence of a reply must not read as "negotiated"):
+            #  - the peer server-initiated its own exchange instead of replying,
+            #    so _on_data already adopted the negotiated MTU and consumed the
+            #    only PDU — nothing left for _request. That's fine, proceed.
+            #  - the link is dead and nothing arrived at all. That's a real
+            #    failure; swallowing it here would just defer the error to the
+            #    next _request in discovery, doubling time-to-failure. Re-raise.
+            if self._peer_initiated_mtu:
+                return self._mtu
+            raise
         server_mtu = int.from_bytes(data[1:3], "little")
         self._mtu = max(DEFAULT_MTU, min(mtu, server_mtu))
         return self._mtu
@@ -206,8 +254,14 @@ class ATTClient:
     async def read(self, handle: int) -> bytes:
         data = await self._request(bytes([READ_REQ]) + handle.to_bytes(2, "little"), READ_RSP)
         value = bytearray(data[1:])
+        # Snapshot the MTU for the continuation test: a peer-initiated MTU
+        # exchange (handled in _on_data) can now mutate self._mtu at any time,
+        # and re-reading it live mid-loop could make a full-length blob look
+        # short and stop early, silently truncating the value. The MTU in effect
+        # when this read started is the one that sized these PDUs.
+        mtu = self._mtu
         # If the value filled the PDU, more may follow — continue with Read Blob.
-        while len(value) >= self._mtu - 1:
+        while len(value) >= mtu - 1:
             blob = await self._read_blob(handle, len(value))
             if not blob:
                 break

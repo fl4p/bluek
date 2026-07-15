@@ -1,6 +1,11 @@
 """Minimal `bleak_retry_connector` shim backed by bluek.
 
-Only the surface aiobmsble uses: ``BLEAK_TIMEOUT`` and ``establish_connection``.
+Covers the surface aiobmsble imports: ``BLEAK_TIMEOUT``,
+``MAX_CONNECT_ATTEMPTS``, ``establish_connection`` and
+``close_stale_connections`` (aiobmsble>=0.25 imports all four; a missing symbol
+here surfaces as a cryptic ``ImportError: cannot import name
+'MAX_CONNECT_ATTEMPTS'`` that makes every aiobmsble BMS look like an "Unknown
+device type" — see batmon-ha #385).
 """
 
 from __future__ import annotations
@@ -12,9 +17,28 @@ from bluek import BLEDevice, BleakClient
 
 BLEAK_TIMEOUT: float = 20.0
 
+# Default connection attempts. aiobmsble uses this to size its hard connect
+# timeout (``MAX_CONNECT_ATTEMPTS * BLEAK_TIMEOUT + 1``); keep it in step with
+# ``establish_connection``'s ``max_attempts`` default below.
+MAX_CONNECT_ATTEMPTS: int = 4
+
 
 class BleakNotFoundError(Exception):
     """Compatibility alias used by some callers (e.g. batmon-ha)."""
+
+
+async def close_stale_connections(
+    device: BLEDevice, only_other_adapters: bool = False, **kwargs: Any
+) -> None:
+    """No-op on bluek.
+
+    Real bleak_retry_connector drops stale BlueZ *D-Bus* connections before a
+    reconnect. bluek talks to the kernel over L2CAP/mgmt sockets and holds no
+    D-Bus connection of its own, so there is nothing to close — but aiobmsble
+    awaits this in both ``_connect()`` and ``disconnect()``, so it must exist and
+    accept ``(device, only_other_adapters=...)``.
+    """
+    return None
 
 
 async def establish_connection(
@@ -22,7 +46,7 @@ async def establish_connection(
     device: BLEDevice,
     name: str,
     disconnected_callback: Optional[Callable[[Any], None]] = None,
-    max_attempts: int = 4,
+    max_attempts: int = MAX_CONNECT_ATTEMPTS,
     **kwargs: Any,
 ) -> BleakClient:
     """Create a client of ``client_class`` for ``device`` and connect, with retries.

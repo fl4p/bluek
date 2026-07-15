@@ -349,5 +349,164 @@ def test_read_and_notify():
     asyncio.run(run())
 
 
+# -- server-initiated Exchange MTU (batmon-ha #385: a JK BMS does this) --------
+
+class _CaptureL2:
+    """Bare L2 transport that just records what the ATTClient sends."""
+
+    def __init__(self):
+        self.sent = []
+
+    def start_reader(self, on_data, on_close=None):
+        self._on_data = on_data
+
+    def close(self):
+        pass
+
+    async def send(self, data: bytes):
+        self.sent.append(bytes(data))
+
+
+def test_server_initiated_mtu_request_answered_not_misrouted():
+    # A peer-initiated Exchange MTU Request (0x02) must be answered with a
+    # Response and must NOT resolve a pending client request — otherwise
+    # exchange_mtu() misreads it and raises "unexpected ATT opcode 0x02".
+    async def run():
+        l2 = _CaptureL2()
+        att = ATTClient(l2)
+        pending = att._loop.create_future()
+        att._pending = pending
+        att._on_data(bytes([_att.EXCHANGE_MTU_REQ]) + (100).to_bytes(2, "little"))
+        await asyncio.sleep(0)  # let the fire-and-forget response run
+        assert not pending.done()                       # pending request untouched
+        assert l2.sent and l2.sent[0][0] == _att.EXCHANGE_MTU_RSP
+        assert att.mtu == 100                            # min(PREFERRED=247, 100)
+
+    asyncio.run(run())
+
+
+def test_exchange_mtu_survives_server_initiating_its_own():
+    # The exact #385 sequence: our exchange_mtu() sends a Request; the server
+    # replies with its OWN Request (0x02) before the Response (0x03). Must not
+    # raise, and must negotiate correctly.
+    class _ReqThenRspL2:
+        def __init__(self):
+            self._loop = asyncio.get_event_loop()
+            self.sent = []
+
+        def start_reader(self, on_data, on_close=None):
+            self._on_data = on_data
+
+        def close(self):
+            pass
+
+        async def send(self, data: bytes):
+            self.sent.append(bytes(data))
+            if data and data[0] == _att.EXCHANGE_MTU_REQ:
+                self._loop.call_soon(self._on_data, bytes([_att.EXCHANGE_MTU_REQ]) + (200).to_bytes(2, "little"))
+                self._loop.call_soon(self._on_data, bytes([_att.EXCHANGE_MTU_RSP]) + (200).to_bytes(2, "little"))
+
+    async def run():
+        att = ATTClient(_ReqThenRspL2())
+        assert await att.exchange_mtu() == 200
+
+    asyncio.run(run())
+
+
+def test_exchange_mtu_shortcircuits_server_only_request(monkeypatch):
+    # If the server only ever server-initiates (0x02) and never answers our
+    # request with 0x03, exchange_mtu() must resolve *immediately* from the
+    # peer's request — not block until ATT_TIMEOUT. Set a large ATT_TIMEOUT and
+    # bound the call at 1s: it must finish well under that.
+    monkeypatch.setattr(_att, "ATT_TIMEOUT", 30.0)
+
+    class _OnlyReqL2:
+        def __init__(self):
+            self._loop = asyncio.get_event_loop()
+            self.sent = []
+
+        def start_reader(self, on_data, on_close=None):
+            self._on_data = on_data
+
+        def close(self):
+            pass
+
+        async def send(self, data: bytes):
+            self.sent.append(bytes(data))
+            if data and data[0] == _att.EXCHANGE_MTU_REQ:
+                self._loop.call_soon(self._on_data, bytes([_att.EXCHANGE_MTU_REQ]) + (120).to_bytes(2, "little"))
+
+    async def run():
+        att = ATTClient(_OnlyReqL2())
+        assert await asyncio.wait_for(att.exchange_mtu(), 1.0) == 120
+
+    asyncio.run(run())
+
+
+def test_exchange_mtu_reraises_on_dead_link(monkeypatch):
+    # A timeout with NO peer activity is a real dead link, not a benign
+    # server-initiated exchange — it must propagate, not be swallowed as
+    # "success" (which would just defer failure to the next request in discovery).
+    monkeypatch.setattr(_att, "ATT_TIMEOUT", 0.05)
+
+    class _DeadL2:
+        def __init__(self):
+            self.sent = []
+
+        def start_reader(self, on_data, on_close=None):
+            self._on_data = on_data
+
+        def close(self):
+            pass
+
+        async def send(self, data: bytes):
+            self.sent.append(bytes(data))  # never replies
+
+    async def run():
+        att = ATTClient(_DeadL2())
+        with pytest.raises(asyncio.TimeoutError):
+            await att.exchange_mtu()
+
+    asyncio.run(run())
+
+
+def test_read_not_truncated_by_midread_mtu_change():
+    # A peer EXCHANGE_MTU_REQ arriving *during* a multi-blob read must not make
+    # read() stop early: the MTU that sized the PDUs is snapshotted at the top.
+    class _MtuMidReadL2:
+        VALUE = bytes(range(66))  # 3x 22-byte chunks at MTU 23
+
+        def __init__(self):
+            self._loop = asyncio.get_event_loop()
+            self._blobs = 0
+
+        def start_reader(self, on_data, on_close=None):
+            self._on_data = on_data
+
+        def close(self):
+            pass
+
+        async def send(self, data: bytes):
+            op = data[0]
+            if op == _att.READ_REQ:
+                self._loop.call_soon(self._on_data, bytes([_att.READ_RSP]) + self.VALUE[:22])
+            elif op == _att.READ_BLOB_REQ:
+                offset = int.from_bytes(data[3:5], "little")
+                self._blobs += 1
+                if self._blobs == 1:
+                    # peer bumps the MTU mid-read (would truncate without the snapshot)
+                    self._on_data(bytes([_att.EXCHANGE_MTU_REQ]) + (247).to_bytes(2, "little"))
+                self._loop.call_soon(self._on_data, bytes([_att.READ_BLOB_RSP]) + self.VALUE[offset:offset + 22])
+
+    async def run():
+        att = ATTClient(_MtuMidReadL2())
+        assert att.mtu == _att.DEFAULT_MTU  # 23, before any exchange
+        value = await att.read(3)
+        assert value == _MtuMidReadL2.VALUE  # full 66 bytes, not truncated to 44
+        assert att.mtu == 247                # the mid-read exchange still took effect
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
