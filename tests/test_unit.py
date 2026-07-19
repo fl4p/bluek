@@ -470,6 +470,37 @@ def test_exchange_mtu_reraises_on_dead_link(monkeypatch):
     asyncio.run(run())
 
 
+def test_stray_mtu_rsp_does_not_break_next_request():
+    # Regression for batmon-ha #386: a JK BMS emits a *late/duplicate* Exchange
+    # MTU Rsp (0x03) after a peer-initiated exchange already satisfied us. By the
+    # time it lands, _pending is the next transaction (discovery's
+    # Read-By-Group-Type, wanting 0x11). The stray must be dropped, not fed to
+    # that request — otherwise discovery dies with
+    # "unexpected ATT opcode 0x03 (wanted 0x11)".
+    class _StrayMtuL2CAP(FakeL2CAP):
+        def __init__(self):
+            super().__init__()
+            self._injected = False
+
+        def _handle(self, req):
+            if req[0] == _att.READ_BY_GROUP_TYPE_REQ and not self._injected:
+                self._injected = True
+                # a stray 0x03 arriving just before the real 0x11 response
+                self._loop.call_soon(
+                    self._on_data,
+                    bytes([_att.EXCHANGE_MTU_RSP]) + (247).to_bytes(2, "little"),
+                )
+            return super()._handle(req)
+
+    async def run():
+        att = ATTClient(_StrayMtuL2CAP())
+        await att.exchange_mtu()
+        return await att.discover()
+
+    services = asyncio.run(run())
+    assert len(services) == 2  # discovery completed despite the stray PDU
+
+
 def test_read_not_truncated_by_midread_mtu_change():
     # A peer EXCHANGE_MTU_REQ arriving *during* a multi-blob read must not make
     # read() stop early: the MTU that sized the PDUs is snapshotted at the top.

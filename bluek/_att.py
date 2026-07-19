@@ -175,8 +175,16 @@ class ATTClient:
             if fut is not None and not fut.done() and self._pending_opcode == EXCHANGE_MTU_RSP:
                 fut.set_result(bytes([EXCHANGE_MTU_RSP]) + peer_mtu.to_bytes(2, "little"))
             return
+        # Deliver only the response this transaction is actually waiting for (or
+        # an Error Rsp). Any other server-initiated PDU that reaches here is a
+        # stray — most often a *late/duplicate* Exchange MTU Rsp (0x03) that
+        # arrives after a peer-initiated exchange already satisfied us (a JK BMS
+        # does this, batmon-ha #386): feeding it to the next pending request
+        # (e.g. a discovery Read-By-Group-Type wanting 0x11) would resolve that
+        # request with the wrong opcode. Drop it and let the real response
+        # arrive — or the request time out — instead of resolving with garbage.
         fut = self._pending
-        if fut is not None and not fut.done():
+        if fut is not None and not fut.done() and opcode in (self._pending_opcode, ERROR_RSP):
             fut.set_result(bytes(data))
 
     async def _confirm(self) -> None:
